@@ -1,0 +1,407 @@
+#include <SoftwareSerial.h>
+#include <Wire.h>
+#include <TimeLib.h>
+#include <DS1307RTC.h>
+
+#define SIM900A_RxPin 10
+#define SIM900A_TxPin 11
+#define PinResetSIM900A 12
+
+#define S1debug true
+#define tempPin 0 //LM35 pin A0
+
+SoftwareSerial SIM900A(SIM900A_RxPin,SIM900A_TxPin);
+
+//String  IPADDRESS         ="";
+//String  PORT              ="";
+
+String  IPADDRESS         ="api.thingspeak.com";
+String  PORT              ="80";
+
+String  APN               ="m2minternet";
+String  cpin              ="";
+String  csq               ="";
+String  cipstatus         ="";
+String  respondsend       ="";
+String  Reply             ="";
+String  Command           ="";
+String  sender_phone      ="";
+String  ResponeSMS        ="";
+
+unsigned long   currentMillis       =0;
+unsigned long   currentMillisSHUT   =0;
+unsigned long   currentMillisCLOSE   =0;
+
+long            previousMillis      =0;
+long            previousMillisSHUT  =0;
+long            previousMillisCLOSE  =0;
+
+long int time             =0;
+
+uint8_t FI                =0;
+uint8_t LI                =0;
+uint8_t state             =0;
+
+boolean TTS               =false;
+
+String  hhmmss="";
+String  DDMMYY="";
+
+int     val;
+float   cel=0;
+
+void setup() {//setup
+  Serial.begin(9600);
+  SIM900A.begin(9600);
+  
+  //declare pin  
+  pinMode(PinResetSIM900A,OUTPUT);
+  delay(100);
+  
+  //warming up sim90A
+  digitalWrite(PinResetSIM900A,LOW);
+  delay(1000);
+  digitalWrite(PinResetSIM900A,HIGH);
+  delay(10000); 
+
+}//setup
+
+void loop() {//loop
+  TimetoSend();
+  //CLOSEBERKALA()//optional
+  SHUTBERKALA();
+  send2server();
+}//loop
+
+//TimetoSend
+//metode ini sebenarnya kurang bagus, karena bisa jadi ngirimnya gak pas
+//bisa juga pake metode ambil detik RTC(T0) lalu ambil lagi (T1), jadi jika mutlak atau absolut T1-T0=5 makan kirim, coba saja mana yg lebih baik
+//tapi metode RTC harus dikasih syarat seperti RTCnya mesti update
+void TimetoSend(){
+  currentMillis = millis();
+  if (currentMillis - previousMillis > 30000) {//30 second
+    Serial.println("time to send");
+    TTS=true;
+    previousMillis = currentMillis;
+  }
+}//TimetoSend
+
+//send2server
+void send2server(){
+  switch(state){
+    case 0:
+    SendCommand("AT+CPIN?",250,S1debug);
+    SendCommand("AT+CSQ",500,S1debug);
+    SendCommand("AT+CREG=2",500,S1debug);
+    SendCommand("AT+CREG?",500,S1debug);   
+    state=1;
+    break;
+
+    case 1:
+    SendCommand("AT+CGATT=1",1000,S1debug);
+    state=2;
+    break;
+
+    case 2:
+    SendCommand("AT+CSTT=\""+APN+"\"",2000,S1debug);
+    state=3;
+    break;
+
+    case 3:
+    SendCommand("AT+CIICR",2000,S1debug);
+    state=4;
+    break;
+
+    case 4:
+    SendCommand("AT+CIFSR",2000,S1debug);
+    state=5;
+    break;
+
+    case 5:
+    SendCommand("AT+CIPSTART=\"TCP\",\""+IPADDRESS+"\",\""+PORT+"\"",2000,S1debug);
+    state=6;
+    break;
+
+    case 6:
+    SendCommand("AT+CIPSTATUS",2000,S1debug);
+    if (cipstatus=="CONNECT OK"){
+      state=7;
+    }
+    else if(cipstatus=="PDP DEACT"){
+      state=8;
+    }
+    else{
+      state=0;
+    }
+    break;
+
+    case 7:
+     if (TTS){
+      ReadRTC();
+      LM35();
+      
+      Serial.print(hhmmss);
+      Serial.print("\t");
+      Serial.print(DDMMYY);
+      Serial.print("\t");
+      Serial.print("TEMPRATURE = ");
+      Serial.print(cel);
+      Serial.println("*C");
+      ////////////////////////////////////////////////////
+       //jika ingin mengirmkannya beserta timestamp nya
+       /*String Data = hhmmss;
+       Data += "#";
+       Data += DDMMYY;
+       Data += "#";
+       Data += String (cel);
+       Serial.print("Data=");
+       Serial.println(Data);*/
+      //////////////////////////////////////////////////// 
+      
+      String Data = String (cel);
+      Serial.print("Data=");
+      Serial.println(Data);
+      
+      String Paket = "GET http://api.thingspeak.com/update?api_key=GA08NCW9A97G2V5K&field1=" + Data;
+      SendCommand("AT+CIPSEND",2000,S1debug);
+      SendCommand(Paket,2000,S1debug);// GET /update?api_key=C7JFHZY54GLCJY38&field1=1\r\n\x1A
+      SendCipSend("\x1A",2000,S1debug);
+    }
+    state=0;
+    break;
+
+    case 8:
+    SendCommand("AT+CIPCLOSE",1000,S1debug);
+    state=0;
+    break;
+
+    case 9:
+    SendCommand("AT+CIPSHUT",1000,S1debug);
+    state=0;
+    break;    
+  }
+}
+
+//SendCommand
+void SendCommand(String command, const int timeout, boolean debug){   
+  Reply = ""; 
+      
+  SIM900A.println(command); 
+  if (command=="AT+CPIN?")
+    {
+     cpin="";
+     if(debug){
+     long int time = millis();   
+     while( (time+timeout) > millis()){
+      while(SIM900A.available()){       
+        Reply += char(SIM900A.read());
+          }  
+        }    
+       //Serial.print("Reply:");
+       //Serial.println(Reply);
+       FI=0;
+       LI=0;
+       FI=Reply.indexOf("+CPIN:");
+       LI=Reply.indexOf('Y',FI);
+       cpin=Reply.substring(FI+6,LI+1);
+       cpin.trim();
+       if (cpin=="READY"){
+        cpin="";
+        cpin+="READY";
+       }
+       else{
+        cpin="";
+        cpin+="UNREADY";        
+       }
+       Serial.print("respon CPIN:");
+       Serial.println(cpin);
+     } 
+    }
+    
+  else if(command=="AT+CSQ"){
+      csq="";
+      if(debug){
+        long int time = millis();   
+        while( (time+timeout) > millis()){
+          while(SIM900A.available()){       
+           Reply += char(SIM900A.read());
+          }  
+        }    
+       //Serial.print("Reply:");
+       //Serial.println(Reply);
+       FI=0;
+       LI=0;
+       FI=Reply.indexOf("+CSQ:");
+       LI=Reply.indexOf(',',FI);
+       csq=Reply.substring(FI+6,LI+3);
+       csq.trim();
+       Serial.print("response CSQ:");
+       Serial.println(csq);
+     } 
+    } 
+    
+  else if(command=="AT+CIPSTATUS")
+    {
+     cipstatus="";
+     if(debug){
+        long int time = millis();   
+        while( (time+timeout) > millis()){
+          while(SIM900A.available()){       
+           Reply += char(SIM900A.read());
+          }  
+        }    
+       //Serial.print("response:");
+       //Serial.println(response);
+       FI=0;
+       LI=0;
+       FI=Reply.indexOf("STATE:");
+       //LI=response.indexOf('1',FI);
+       cipstatus=Reply.substring(FI+7,FI+7+15);
+       cipstatus.trim();
+       Serial.print("response cipstatus:");
+       Serial.println(cipstatus);//Serial.println("<==END");
+     }
+    }
+    
+  else{  
+      if(debug){
+        long int time = millis();   
+        while( (time+timeout) > millis()){
+          while(SIM900A.available()){       
+          Reply += char(SIM900A.read());
+         }  
+       }    
+       //Serial.print("response:");
+       Serial.println(Reply);
+      } 
+     } 
+}//SendCommand
+
+//SendCipSend
+void SendCipSend(String command, const int timeout, boolean debug){   
+  Reply = "";
+  FI=0;
+  LI=0;    
+    
+  SIM900A.println(command); 
+  if(debug){
+    respondsend="";
+    long int time = millis();   
+    while( (time+timeout) > millis()){
+      while(SIM900A.available()){       
+        Reply += char(SIM900A.read());
+        }  
+     }    
+    Serial.print("response SERVER:");
+    Serial.print(Reply);Serial.println("<=END");
+  } 
+}//SendCipSend
+
+
+//SHUT_BERKALA
+void SHUTBERKALA(){
+  currentMillisSHUT = millis();
+  if (currentMillisSHUT - previousMillisSHUT > 5*60000) {//5 menit
+    Serial.println("SHUT BERKALA");
+    previousMillisSHUT = currentMillisSHUT;
+    state=9;
+  }  
+}//SHUT_BERKALA
+
+//CLOSE_BERKALA
+void CLOSEBERKALA(){
+  currentMillisCLOSE = millis();
+  if (currentMillisCLOSE - previousMillisCLOSE > 2*60000) {//5 menit
+    Serial.println("CLOSE BERKALA");
+    previousMillisCLOSE = currentMillisCLOSE;
+    state=8;
+  }  
+}//CLOSE_BERKALA
+
+void ReadRTC(){
+  tmElements_t tm;
+
+  if (RTC.read(tm)) {
+    String Hour="";
+    String Minute="";
+    String Second="";
+
+    String Date="";
+    String Month="";
+    String Year=""; 
+     
+    hhmmss="";
+    DDMMYY="";
+    
+    if (tm.Hour>=0 && tm.Hour<10){
+      Hour="0";
+      Hour+=String(tm.Hour);
+    }else{
+      Hour=String(tm.Hour);
+    }
+    hhmmss+=Hour;
+    hhmmss+=":";
+
+   if (tm.Minute>=0 && tm.Minute<10){
+      Minute="0";
+      Minute+=String(tm.Minute);
+    }else{
+      Minute=String(tm.Minute);
+    }
+    hhmmss+=Minute;
+    hhmmss+=":";
+    
+   if (tm.Second>=0 && tm.Second<10){
+      Second="0";
+      Second+=String(tm.Second);
+    }else{
+      Second=String(tm.Second);
+    }
+    hhmmss+=Second;
+
+    if (tm.Day>=0 && tm.Day<10){
+      Date="0";
+      Date+=String(tm.Day);
+    }else{
+      Date=String(tm.Day);
+    }
+    DDMMYY+=Date;
+    DDMMYY+="/";
+    
+    if (tm.Month>=0 && tm.Month<10){
+      Month="0";
+      Month+=String(tm.Month);
+    }else{
+      Month=String(tm.Month);
+    }
+    DDMMYY+=Month;
+    DDMMYY+="/";
+    
+    DDMMYY+=String(tmYearToCalendar(tm.Year));
+  } else {
+    if (RTC.chipPresent()) {
+      Serial.println("The DS1307 is stopped.  Please run the SetTime");
+      Serial.println("example to initialize the time and begin running.");
+      Serial.println();
+    } else {
+      Serial.println("DS1307 read error!  Please check the circuitry.");
+      Serial.println();
+    }
+    //delay(9000);
+  }
+  //delay(1000);  
+}
+
+void LM35(){
+  int val = analogRead(tempPin);
+  float mv = ( val/1024.0)*5000; 
+  cel = mv/10;
+  //float farh = (cel*9)/5 + 32;
+  
+  /* uncomment this to get temperature in farenhite 
+  Serial.print("TEMPRATURE = ");
+  Serial.print(farh);
+  Serial.print("*F");
+  Serial.println();
+*/
+}
