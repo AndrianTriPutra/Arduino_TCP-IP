@@ -1,4 +1,4 @@
-# arduino_TCP-IP
+# arduino_TCP/IP
 Program  ini merupakan contoh pengiriman data ke server thinspeak dengan menggunakan protocol TCP/IP
 Jika teman-teman sudah memiliki server sendiri silahkan dicoba ganti IP dan PORT-nya
 Didalam program ini juga dijelaskan cara menutup koneksi ke server dengan AT+COMMAND CIPCLOSE dan memutus koneksi internet dengan AT+COMMAND CIPSHUT
